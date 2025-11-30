@@ -11,7 +11,7 @@
 #   Pass: camera123
 #   Path: /
 
-version: '3.8'
+version: '2.3'
 
 services:
   # FTP Server for receiving camera uploads
@@ -31,13 +31,7 @@ services:
       - PASV_MAX_PORT=21110
       - LOCAL_UMASK=022
     volumes:
-      # Use tmpfs (RAM) for FTP uploads - protects SD card
-      - type: tmpfs
-        target: /home/vsftpd/camera
-        tmpfs:
-          size: 100M
-      # Bind to shared volume for ALPR service
-      - ftp_inbox:/home/vsftpd/camera
+      - /dev/shm/ftp_inbox:/home/vsftpd/camera
     networks:
       - alpr-network
 
@@ -53,35 +47,24 @@ services:
     environment:
       - ALPR_WATCH_DIR=/watch/inbox
       - ALPR_OUTPUT_DIR=/watch/outbox
-      - ALPR_FTP_HOST=192.168.100.238
-      - ALPR_FTP_USER=photo
-      - ALPR_FTP_PASS=photo
-      - ALPR_FTP_DIR=/
-      - ALPR_CONF_THRESH=0.4
+      - ALPR_FTP_HOST=${ALPR_FTP_HOST:-192.168.100.238}
+      - ALPR_FTP_USER=${ALPR_FTP_USER:-photo}
+      - ALPR_FTP_PASS=${ALPR_FTP_PASS:-photo}
+      - ALPR_FTP_DIR=${ALPR_FTP_DIR:-/}
+      - ALPR_CONF_THRESH=${ALPR_CONF_THRESH:-0.4}
       - ALPR_DELETE_PROCESSED=true
-      - ALPR_LOG_LEVEL=INFO
+      - ALPR_LOG_LEVEL=${ALPR_LOG_LEVEL:-INFO}
     volumes:
-      # Watch the FTP inbox
-      - ftp_inbox:/watch/inbox
-      # Temp output (RAM)
-      - type: tmpfs
-        target: /watch/outbox
-        tmpfs:
-          size: 50M
+      # Watch the FTP inbox (host RAM-based directory)
+      - /dev/shm/ftp_inbox:/watch/inbox
+      # Temp output (host RAM-based directory)
+      - /dev/shm/alpr_outbox:/watch/outbox
       # Models (read-only)
       - ./models:/app/models:ro
     depends_on:
       - ftp-server
     networks:
       - alpr-network
-
-volumes:
-  ftp_inbox:
-    driver: local
-    driver_opts:
-      type: tmpfs
-      device: tmpfs
-      o: size=100m
 
 networks:
   alpr-network:

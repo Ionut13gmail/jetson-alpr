@@ -313,6 +313,35 @@ EOF
     echo "  Pass: camera123"
 }
 
+cmd_deps() {
+    log_info "Installing host dependencies for non-Docker use..."
+
+    # System packages
+    sudo apt-get update
+    sudo apt-get install -y python3-pip python3-opencv libopencv-dev
+
+    # Python packages for Jetson
+    pip3 install --upgrade pip
+    pip3 install numpy pillow inotify
+
+    # ONNX Runtime with CUDA/TensorRT support (Jetson-specific)
+    # Check if already installed
+    if python3 -c "import onnxruntime" 2>/dev/null; then
+        log_info "ONNX Runtime already installed"
+        python3 -c "import onnxruntime; print('Version:', onnxruntime.__version__)"
+    else
+        log_info "Installing ONNX Runtime for Jetson..."
+        # For JetPack 4.6.x
+        pip3 install onnxruntime-gpu==1.10.0 2>/dev/null || \
+        pip3 install https://nvidia.box.com/shared/static/pmsqsiaw4pg9qrbeckcbymho6c01jj4z.whl 2>/dev/null || \
+        log_warn "ONNX Runtime installation may require manual setup for your JetPack version"
+    fi
+
+    log_info "Dependencies installed."
+    echo ""
+    echo "Note: Docker deployment is recommended. Host dependencies are for testing only."
+}
+
 cmd_help() {
     echo "ALPR Service Management Script"
     echo ""
@@ -328,12 +357,14 @@ cmd_help() {
     echo "  status    Show service status"
     echo "  test      Run test with sample image"
     echo "  setup     Initial setup wizard"
+    echo "  deps      Install host dependencies (non-Docker)"
     echo "  help      Show this help"
     echo ""
     echo "Examples:"
     echo "  $0 setup      # First time setup"
     echo "  $0 start      # Start service"
     echo "  $0 update     # Update from GitHub"
+    echo "  $0 deps       # Install dependencies (non-Docker)"
 }
 
 # Main
@@ -347,5 +378,6 @@ case "${1:-help}" in
     status)  cmd_status ;;
     test)    cmd_test ;;
     setup)   cmd_setup ;;
+    deps)    cmd_deps ;;
     help|*)  cmd_help ;;
 esac
