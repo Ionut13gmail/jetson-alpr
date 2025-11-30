@@ -461,6 +461,284 @@ class JetsonALPR(object):
         return results
 
 
+# =============================================================================
+# Enhanced ALPR with Vehicle Detection for Distant Plates
+# =============================================================================
+class EnhancedALPR(object):
+    """
+    Enhanced ALPR that uses car detection for distant/small plates.
+
+    Workflow for distant plates:
+    1. Run normal plate detection
+    2. If no plates found (or plates too small), detect vehicles
+    3. For each vehicle, crop region and re-run plate detection
+    4. Merge results
+
+    This runs in a separate thread to not block the main processing flow.
+    """
+
+    # COCO class IDs for vehicles
+    VEHICLE_CLASSES = {2: 'car', 3: 'motorcycle', 5: 'bus', 7: 'truck'}
+
+    def __init__(self, alpr, vehicle_model_path=None, use_gpu=True,
+                 vehicle_conf_thresh=0.3, min_plate_size=30):
+        """
+        Initialize enhanced ALPR.
+
+        Args:
+            alpr: JetsonALPR instance for plate detection
+            vehicle_model_path: Path to YOLOv8n ONNX model (optional)
+            use_gpu: Use GPU acceleration
+            vehicle_conf_thresh: Confidence threshold for vehicle detection
+            min_plate_size: Minimum plate bbox size to consider "good" detection
+        """
+        self.alpr = alpr
+        self.vehicle_conf_thresh = vehicle_conf_thresh
+        self.min_plate_size = min_plate_size
+        self.vehicle_detector = None
+        self._vehicle_model_loaded = False
+
+        # Try to load vehicle model
+        if vehicle_model_path and os.path.exists(vehicle_model_path):
+            self._load_vehicle_model(vehicle_model_path, use_gpu)
+        else:
+            # Check default locations
+            default_paths = [
+                os.path.join(MODELS_DIR, "yolov8n.onnx"),
+                os.path.join(MODELS_DIR, "vehicle_detector.onnx"),
+            ]
+            for path in default_paths:
+                if os.path.exists(path):
+                    self._load_vehicle_model(path, use_gpu)
+                    break
+
+    def _load_vehicle_model(self, model_path, use_gpu):
+        """Load YOLOv8n vehicle detection model."""
+        try:
+            if use_gpu:
+                providers = [
+                    'TensorrtExecutionProvider',
+                    'CUDAExecutionProvider',
+                    'CPUExecutionProvider'
+                ]
+            else:
+                providers = ['CPUExecutionProvider']
+
+            sess_opts = ort.SessionOptions()
+            sess_opts.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
+
+            self.vehicle_detector = ort.InferenceSession(
+                model_path,
+                sess_options=sess_opts,
+                providers=providers
+            )
+
+            self._vehicle_input_name = self.vehicle_detector.get_inputs()[0].name
+            self._vehicle_output_names = [o.name for o in self.vehicle_detector.get_outputs()]
+            self._vehicle_model_loaded = True
+            print("Vehicle detector loaded:", model_path)
+
+        except Exception as e:
+            print("Warning: Could not load vehicle model:", e)
+            self._vehicle_model_loaded = False
+
+    def _detect_vehicles(self, image):
+        """Detect vehicles in image using YOLOv8n."""
+        if not self._vehicle_model_loaded:
+            return []
+
+        # Preprocess for YOLOv8 (640x640)
+        h, w = image.shape[:2]
+        target_size = 640
+        scale = min(target_size / w, target_size / h)
+        new_w, new_h = int(w * scale), int(h * scale)
+
+        resized = cv2.resize(image, (new_w, new_h))
+        padded = np.full((target_size, target_size, 3), 114, dtype=np.uint8)
+        pad_x, pad_y = (target_size - new_w) // 2, (target_size - new_h) // 2
+        padded[pad_y:pad_y+new_h, pad_x:pad_x+new_w] = resized
+
+        # Normalize and convert to NCHW
+        input_tensor = padded.astype(np.float32) / 255.0
+        input_tensor = np.transpose(input_tensor, (2, 0, 1))
+        input_tensor = np.expand_dims(input_tensor, axis=0)
+
+        # Run inference
+        outputs = self.vehicle_detector.run(
+            self._vehicle_output_names,
+            {self._vehicle_input_name: input_tensor}
+        )
+
+        # Parse YOLOv8 output (1, 84, 8400) -> transpose to (1, 8400, 84)
+        output = outputs[0]
+        if output.shape[1] == 84:  # (1, 84, 8400)
+            output = np.transpose(output, (0, 2, 1))
+
+        detections = []
+        output = output[0]  # Remove batch dimension
+
+        for det in output:
+            # Format: x, y, w, h, class_scores[80]
+            x, y, box_w, box_h = det[:4]
+            class_scores = det[4:]
+
+            class_id = int(np.argmax(class_scores))
+            conf = float(class_scores[class_id])
+
+            # Only keep vehicle classes
+            if class_id not in self.VEHICLE_CLASSES:
+                continue
+            if conf < self.vehicle_conf_thresh:
+                continue
+
+            # Convert to absolute coordinates
+            x1 = (x - box_w/2 - pad_x) / scale
+            y1 = (y - box_h/2 - pad_y) / scale
+            x2 = (x + box_w/2 - pad_x) / scale
+            y2 = (y + box_h/2 - pad_y) / scale
+
+            # Clip to image bounds
+            x1, y1 = max(0, x1), max(0, y1)
+            x2, y2 = min(w, x2), min(h, y2)
+
+            if x2 > x1 and y2 > y1:
+                detections.append({
+                    'bbox': (int(x1), int(y1), int(x2), int(y2)),
+                    'confidence': conf,
+                    'class': self.VEHICLE_CLASSES[class_id]
+                })
+
+        # Non-max suppression
+        if detections:
+            detections = self._nms(detections, 0.5)
+
+        return detections
+
+    def _nms(self, detections, iou_thresh):
+        """Simple NMS implementation."""
+        if not detections:
+            return []
+
+        # Sort by confidence
+        detections = sorted(detections, key=lambda x: x['confidence'], reverse=True)
+
+        keep = []
+        while detections:
+            best = detections.pop(0)
+            keep.append(best)
+
+            remaining = []
+            for det in detections:
+                iou = self._calculate_iou(best['bbox'], det['bbox'])
+                if iou < iou_thresh:
+                    remaining.append(det)
+            detections = remaining
+
+        return keep
+
+    def _calculate_iou(self, box1, box2):
+        """Calculate IoU between two boxes."""
+        x1 = max(box1[0], box2[0])
+        y1 = max(box1[1], box2[1])
+        x2 = min(box1[2], box2[2])
+        y2 = min(box1[3], box2[3])
+
+        inter = max(0, x2-x1) * max(0, y2-y1)
+        area1 = (box1[2]-box1[0]) * (box1[3]-box1[1])
+        area2 = (box2[2]-box2[0]) * (box2[3]-box2[1])
+        union = area1 + area2 - inter
+
+        return inter / union if union > 0 else 0
+
+    def _is_plate_too_small(self, results):
+        """Check if detected plates are too small (distant)."""
+        if not results:
+            return True
+
+        for r in results:
+            x1, y1, x2, y2 = r['bbox']
+            plate_w = x2 - x1
+            plate_h = y2 - y1
+            if plate_w >= self.min_plate_size and plate_h >= self.min_plate_size // 2:
+                return False
+        return True
+
+    def predict_enhanced(self, image, force_vehicle_detection=False):
+        """
+        Enhanced prediction with vehicle detection fallback.
+
+        Args:
+            image: Input image (BGR) or path
+            force_vehicle_detection: Always run vehicle detection
+
+        Returns:
+            List of detection results with plate text
+        """
+        if isinstance(image, str):
+            image = cv2.imread(image)
+            if image is None:
+                return []
+
+        # First: run normal plate detection
+        results = self.alpr.predict(image)
+
+        # If good results found and not forcing, return early
+        if results and not self._is_plate_too_small(results) and not force_vehicle_detection:
+            return results
+
+        # Second: detect vehicles and search for plates in each
+        if not self._vehicle_model_loaded:
+            return results
+
+        vehicles = self._detect_vehicles(image)
+        if not vehicles:
+            return results
+
+        # Run plate detection on each vehicle crop
+        for vehicle in vehicles:
+            vx1, vy1, vx2, vy2 = vehicle['bbox']
+
+            # Add padding around vehicle (20%)
+            vw, vh = vx2 - vx1, vy2 - vy1
+            pad_x, pad_y = int(vw * 0.1), int(vh * 0.1)
+
+            cx1 = max(0, vx1 - pad_x)
+            cy1 = max(0, vy1 - pad_y)
+            cx2 = min(image.shape[1], vx2 + pad_x)
+            cy2 = min(image.shape[0], vy2 + pad_y)
+
+            vehicle_crop = image[cy1:cy2, cx1:cx2]
+            if vehicle_crop.size == 0:
+                continue
+
+            # Run plate detection on crop
+            crop_results = self.alpr.predict(vehicle_crop)
+
+            # Adjust coordinates back to original image
+            for r in crop_results:
+                bx1, by1, bx2, by2 = r['bbox']
+                r['bbox'] = (bx1 + cx1, by1 + cy1, bx2 + cx1, by2 + cy1)
+                r['from_vehicle'] = vehicle['class']
+
+                # Check for duplicates before adding
+                is_duplicate = False
+                for existing in results:
+                    iou = self._calculate_iou(r['bbox'], existing['bbox'])
+                    if iou > 0.5:
+                        is_duplicate = True
+                        break
+
+                if not is_duplicate:
+                    results.append(r)
+
+        return results
+
+    @property
+    def has_vehicle_detector(self):
+        """Check if vehicle detector is available."""
+        return self._vehicle_model_loaded
+
+
 def benchmark(alpr, image_path, num_runs=10):
     """Benchmark ALPR performance"""
     image = cv2.imread(image_path)

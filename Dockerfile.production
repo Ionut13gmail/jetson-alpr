@@ -56,6 +56,12 @@ ENV ALPR_CONF_THRESH=0.4
 ENV ALPR_DELETE_PROCESSED=true
 ENV ALPR_LOG_LEVEL=INFO
 
+# Enhanced detection (for distant plates)
+# When enabled, detects vehicles and re-runs plate detection on vehicle crops
+ENV ALPR_ENHANCED_DETECTION=true
+ENV ALPR_MIN_PLATE_SIZE=30
+ENV ALPR_VEHICLE_CONF_THRESH=0.3
+
 # Health check
 HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
     CMD python3 -c "import os; exit(0 if os.path.exists('/app/models') else 1)"

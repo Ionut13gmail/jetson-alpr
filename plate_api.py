@@ -290,7 +290,18 @@ class APIUploader:
                 timeout=self.config.REQUEST_TIMEOUT
             )
             response.raise_for_status()
-            result = response.json()
+
+            # Handle empty or non-JSON responses
+            if not response.text or not response.text.strip():
+                logger.warning("Upload for %s: empty response (but HTTP OK)", data.plate)
+                return "uploaded"
+
+            try:
+                result = response.json()
+            except ValueError:
+                # Response is not JSON - log but consider it success if HTTP was OK
+                logger.warning("Upload for %s: non-JSON response: %s", data.plate, response.text[:100])
+                return "uploaded"
 
             remote_name = result.get('picName', '')
             if remote_name:
@@ -298,7 +309,7 @@ class APIUploader:
                 return remote_name
             else:
                 logger.warning("Upload response missing picName: %s", result)
-                return None
+                return "uploaded"  # Still consider success if HTTP was OK
 
         except requests.RequestException as e:
             logger.error("Upload failed for %s: %s", data.plate, e)

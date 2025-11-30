@@ -30,7 +30,8 @@ import numpy as np
 import cv2
 
 # Import ALPR engine
-from jetson_alpr import JetsonALPR
+from jetson_alpr import JetsonALPR, EnhancedALPR
+from concurrent.futures import ThreadPoolExecutor
 
 # Import API client (optional, graceful fallback)
 try:
@@ -68,6 +69,11 @@ class Config:
 
     # Polling interval (seconds) - fallback if inotify unavailable
     POLL_INTERVAL = float(os.environ.get('ALPR_POLL_INTERVAL', '0.5'))
+
+    # Enhanced detection (for distant plates)
+    ENHANCED_DETECTION = os.environ.get('ALPR_ENHANCED_DETECTION', 'true').lower() == 'true'
+    MIN_PLATE_SIZE = int(os.environ.get('ALPR_MIN_PLATE_SIZE', '30'))
+    VEHICLE_CONF_THRESH = float(os.environ.get('ALPR_VEHICLE_CONF_THRESH', '0.3'))
 
     # Annotation style
     BOX_COLOR = (0, 255, 0)  # Green BGR
@@ -278,13 +284,16 @@ class ALPRService:
     def __init__(self):
         self.logger = setup_logging()
         self.alpr = None
+        self.enhanced_alpr = None
         self.api_client = None
         self.watcher = None
         self.running = False
+        self._enhanced_executor = None
         self.stats = {
             'processed': 0,
             'plates_found': 0,
             'gates_opened': 0,
+            'enhanced_detections': 0,
             'errors': 0,
             'start_time': None
         }
@@ -316,6 +325,23 @@ class ALPRService:
         self.logger.info("Loading ALPR models...")
         self.alpr = JetsonALPR(use_gpu=True, conf_thresh=Config.CONFIDENCE_THRESHOLD)
         self.logger.info("ALPR models loaded")
+
+        # Initialize Enhanced ALPR for distant plates (with vehicle detection)
+        if Config.ENHANCED_DETECTION:
+            self.logger.info("Initializing enhanced detection (vehicle detection)...")
+            self.enhanced_alpr = EnhancedALPR(
+                alpr=self.alpr,
+                use_gpu=True,
+                vehicle_conf_thresh=Config.VEHICLE_CONF_THRESH,
+                min_plate_size=Config.MIN_PLATE_SIZE
+            )
+            if self.enhanced_alpr.has_vehicle_detector:
+                self.logger.info("  Vehicle detector loaded")
+                # Background executor for enhanced detection (1 worker to not overload GPU)
+                self._enhanced_executor = ThreadPoolExecutor(max_workers=1)
+            else:
+                self.logger.warning("  Vehicle model not found, enhanced detection disabled")
+                self.enhanced_alpr = None
 
         # Warmup GPU
         self.logger.info("Warming up GPU...")
@@ -366,8 +392,18 @@ class ALPRService:
                 else:
                     self._process_ftp_mode(
                         plate_text, annotated, filename, confidence)
+
+                # Check if plate is too small - queue enhanced detection in background
+                if self._should_run_enhanced(results) and self.enhanced_alpr:
+                    self.logger.info("  Plate too small, queueing enhanced detection...")
+                    self._queue_enhanced_detection(image.copy(), filename)
             else:
                 self.logger.info("  No plate detected [%dms]", inference_ms)
+
+                # No results - queue enhanced detection in background
+                if self.enhanced_alpr:
+                    self.logger.info("  Queueing enhanced detection...")
+                    self._queue_enhanced_detection(image.copy(), filename)
 
             # Cleanup input file
             if Config.DELETE_AFTER_PROCESS:
@@ -420,6 +456,66 @@ class ALPRService:
         except OSError:
             pass
 
+    def _should_run_enhanced(self, results):
+        """Check if we should run enhanced detection (plates too small)."""
+        if not results:
+            return True
+
+        for r in results:
+            x1, y1, x2, y2 = r['bbox']
+            plate_w = x2 - x1
+            plate_h = y2 - y1
+            # If any plate is large enough, don't run enhanced
+            if plate_w >= Config.MIN_PLATE_SIZE and plate_h >= Config.MIN_PLATE_SIZE // 2:
+                return False
+        return True
+
+    def _queue_enhanced_detection(self, image, filename):
+        """Queue enhanced detection to run in background thread."""
+        if self._enhanced_executor:
+            self._enhanced_executor.submit(
+                self._process_enhanced_detection, image, filename
+            )
+
+    def _process_enhanced_detection(self, image, filename):
+        """
+        Run enhanced detection in background thread.
+        Detects vehicles, crops them, and re-runs plate detection.
+        """
+        try:
+            start_time = time.time()
+            results = self.enhanced_alpr.predict_enhanced(image, force_vehicle_detection=True)
+            inference_ms = (time.time() - start_time) * 1000
+
+            if results:
+                self.stats['enhanced_detections'] += 1
+
+                # Get best detection
+                best = max(results, key=lambda r: r['ocr_confidence'])
+                plate_text = best['text']
+                confidence = best['ocr_confidence']
+                bbox = best['bbox']
+
+                source = best.get('from_vehicle', 'direct')
+                self.logger.info("[ENHANCED] Plate: %s (%.1f%%) from %s [%dms]",
+                               plate_text, confidence * 100, source, inference_ms)
+
+                # Annotate image
+                annotated = annotate_image(image, results)
+
+                # Process based on mode
+                if Config.MODE == 'api' and self.api_client:
+                    self._process_api_mode(
+                        plate_text, annotated, filename, confidence, bbox)
+                else:
+                    self._process_ftp_mode(
+                        plate_text, annotated, filename, confidence)
+            else:
+                self.logger.info("[ENHANCED] No plates found [%dms]", inference_ms)
+
+        except Exception as e:
+            self.logger.error("[ENHANCED] Error: %s", e)
+
     def run(self):
         """Start the service."""
         self.running = True
@@ -458,9 +554,15 @@ class ALPRService:
         self.logger.info("  Uptime: %.1f seconds", uptime)
         self.logger.info("  Images processed: %d", self.stats['processed'])
         self.logger.info("  Plates found: %d", self.stats['plates_found'])
+        self.logger.info("  Enhanced detections: %d", self.stats['enhanced_detections'])
         self.logger.info("  Gates opened: %d", self.stats['gates_opened'])
         self.logger.info("  Errors: %d", self.stats['errors'])
         self.logger.info("-" * 60)
+
+        # Shutdown enhanced detection executor
+        if self._enhanced_executor:
+            self.logger.info("Waiting for background tasks...")
+            self._enhanced_executor.shutdown(wait=True)
 
         if self.api_client:
             self.api_client.shutdown()
