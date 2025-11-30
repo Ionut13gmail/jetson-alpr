@@ -251,9 +251,16 @@ setup_vsftpd() {
     sudo apt-get update
     sudo apt-get install -y vsftpd
 
-    # Create FTP user
+    # Create FTP user with nologin shell (FTP-only access)
     sudo useradd -m -d /dev/shm/alpr_inbox -s /usr/sbin/nologin ftpcamera 2>/dev/null || true
     echo "ftpcamera:camera123" | sudo chpasswd
+
+    # IMPORTANT: Add nologin to valid shells for PAM authentication
+    # Without this, pam_shells.so rejects FTP login with "530 Login incorrect"
+    if ! grep -q '/usr/sbin/nologin' /etc/shells 2>/dev/null; then
+        log_info "Adding /usr/sbin/nologin to /etc/shells..."
+        echo '/usr/sbin/nologin' | sudo tee -a /etc/shells > /dev/null
+    fi
 
     # Configure vsftpd
     sudo tee /etc/vsftpd.conf > /dev/null << 'EOF'
