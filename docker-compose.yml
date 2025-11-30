@@ -1,0 +1,88 @@
+# Docker Compose for Production ALPR Service
+# Includes FTP server for camera uploads and ALPR processing service
+#
+# Usage:
+#   docker-compose up -d
+#
+# Camera FTP settings:
+#   Host: <jetson-ip>
+#   Port: 21
+#   User: camera
+#   Pass: camera123
+#   Path: /
+
+version: '3.8'
+
+services:
+  # FTP Server for receiving camera uploads
+  # Images go to /dev/shm/ftp_inbox (RAM disk)
+  ftp-server:
+    image: fauria/vsftpd
+    container_name: alpr-ftp-server
+    restart: unless-stopped
+    ports:
+      - "21:21"
+      - "21100-21110:21100-21110"
+    environment:
+      - FTP_USER=camera
+      - FTP_PASS=camera123
+      - PASV_ADDRESS=${JETSON_IP:-10.8.1.2}
+      - PASV_MIN_PORT=21100
+      - PASV_MAX_PORT=21110
+      - LOCAL_UMASK=022
+    volumes:
+      # Use tmpfs (RAM) for FTP uploads - protects SD card
+      - type: tmpfs
+        target: /home/vsftpd/camera
+        tmpfs:
+          size: 100M
+      # Bind to shared volume for ALPR service
+      - ftp_inbox:/home/vsftpd/camera
+    networks:
+      - alpr-network
+
+  # ALPR Processing Service
+  alpr-service:
+    build:
+      context: .
+      dockerfile: Dockerfile.production
+    image: alpr-service:latest
+    container_name: alpr-service
+    restart: unless-stopped
+    runtime: nvidia
+    environment:
+      - ALPR_WATCH_DIR=/watch/inbox
+      - ALPR_OUTPUT_DIR=/watch/outbox
+      - ALPR_FTP_HOST=192.168.100.238
+      - ALPR_FTP_USER=photo
+      - ALPR_FTP_PASS=photo
+      - ALPR_FTP_DIR=/
+      - ALPR_CONF_THRESH=0.4
+      - ALPR_DELETE_PROCESSED=true
+      - ALPR_LOG_LEVEL=INFO
+    volumes:
+      # Watch the FTP inbox
+      - ftp_inbox:/watch/inbox
+      # Temp output (RAM)
+      - type: tmpfs
+        target: /watch/outbox
+        tmpfs:
+          size: 50M
+      # Models (read-only)
+      - ./models:/app/models:ro
+    depends_on:
+      - ftp-server
+    networks:
+      - alpr-network
+
+volumes:
+  ftp_inbox:
+    driver: local
+    driver_opts:
+      type: tmpfs
+      device: tmpfs
+      o: size=100m
+
+networks:
+  alpr-network:
+    driver: bridge

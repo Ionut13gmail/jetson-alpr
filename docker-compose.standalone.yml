@@ -1,0 +1,33 @@
+# Standalone ALPR Service (without built-in FTP server)
+# Use this if you already have an FTP server or want to use host filesystem
+#
+# Usage:
+#   JETSON_IP=10.8.1.2 docker-compose -f docker-compose.standalone.yml up -d
+
+version: '3.8'
+
+services:
+  alpr-service:
+    build:
+      context: .
+      dockerfile: Dockerfile.production
+    image: alpr-service:latest
+    container_name: alpr-service
+    restart: unless-stopped
+    runtime: nvidia
+    environment:
+      - ALPR_WATCH_DIR=/watch/inbox
+      - ALPR_OUTPUT_DIR=/watch/outbox
+      - ALPR_FTP_HOST=${FTP_HOST:-192.168.100.238}
+      - ALPR_FTP_USER=${FTP_USER:-photo}
+      - ALPR_FTP_PASS=${FTP_PASS:-photo}
+      - ALPR_FTP_DIR=${FTP_DIR:-/}
+      - ALPR_CONF_THRESH=${CONF_THRESH:-0.4}
+      - ALPR_DELETE_PROCESSED=true
+      - ALPR_LOG_LEVEL=${LOG_LEVEL:-INFO}
+    volumes:
+      # Use /dev/shm for RAM-based storage (protects SD card)
+      - /dev/shm/alpr_inbox:/watch/inbox
+      - /dev/shm/alpr_outbox:/watch/outbox
+      # Models
+      - ./models:/app/models:ro

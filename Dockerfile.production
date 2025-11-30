@@ -1,0 +1,38 @@
+# Production Dockerfile for ALPR Service on Jetson Nano
+# Watches for camera uploads, processes with GPU, annotates, and uploads to FTP
+
+FROM dustynv/l4t-ml:r32.7.1
+
+WORKDIR /app
+
+# Install inotify for efficient file watching
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    python3-pip \
+    && rm -rf /var/lib/apt/lists/* \
+    && pip3 install --no-cache-dir inotify
+
+# Copy application files
+COPY jetson_alpr.py /app/
+COPY alpr_service.py /app/
+COPY models/ /app/models/
+
+# Create watch directories (will be mounted from host)
+RUN mkdir -p /watch/inbox /watch/outbox
+
+# Environment variables (can be overridden)
+ENV ALPR_WATCH_DIR=/watch/inbox
+ENV ALPR_OUTPUT_DIR=/watch/outbox
+ENV ALPR_FTP_HOST=192.168.100.238
+ENV ALPR_FTP_USER=photo
+ENV ALPR_FTP_PASS=photo
+ENV ALPR_FTP_DIR=/
+ENV ALPR_CONF_THRESH=0.4
+ENV ALPR_DELETE_PROCESSED=true
+ENV ALPR_LOG_LEVEL=INFO
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
+    CMD python3 -c "import os; exit(0 if os.path.exists('/app/models') else 1)"
+
+# Run the service
+CMD ["python3", "-u", "/app/alpr_service.py"]

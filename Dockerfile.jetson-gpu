@@ -1,0 +1,25 @@
+# Dockerfile for fast-alpr on Jetson Nano with GPU support
+# Uses dustynv/l4t-ml which already has:
+# - Python 3.6
+# - ONNX Runtime 1.10.0 with GPU (TensorRT + CUDA)
+# - OpenCV 4.5.0 with CUDA
+# - NumPy
+#
+# NOTE: OpenCV and ONNX with GPU require --runtime nvidia at runtime
+# because CUDA libs are mounted from host
+
+FROM dustynv/l4t-ml:r32.7.1
+
+WORKDIR /app
+
+# Show Python version (cv2/onnx need CUDA which is only at runtime)
+RUN python3 --version && \
+    python3 -c "import numpy; print('NumPy:', numpy.__version__)"
+
+# Copy application files
+COPY jetson_alpr.py /app/
+COPY assets/ /app/assets/
+COPY models/ /app/models/
+
+# Default command
+CMD ["python3", "/app/jetson_alpr.py"]
