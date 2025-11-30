@@ -47,9 +47,17 @@ services:
       - ALPR_CONF_THRESH=${ALPR_CONF_THRESH:-0.4}
       - ALPR_DELETE_PROCESSED=${ALPR_DELETE_PROCESSED:-true}
       - ALPR_LOG_LEVEL=${ALPR_LOG_LEVEL:-INFO}
+
+      # Enhanced detection (requires yolov8n.onnx model)
+      - ALPR_ENHANCED_DETECTION=${ALPR_ENHANCED_DETECTION:-false}
     volumes:
       # Use /dev/shm for RAM-based storage (protects SD card)
       - /dev/shm/alpr_inbox:/watch/inbox
       - /dev/shm/alpr_outbox:/watch/outbox
       # Models (read-only)
       - ./models:/app/models:ro
+      # TensorRT engine cache (persistent for faster startup)
+      - tensorrt_cache:/cache/tensorrt
+
+volumes:
+  tensorrt_cache:

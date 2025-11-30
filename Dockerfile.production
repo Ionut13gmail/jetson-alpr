@@ -56,11 +56,18 @@ ENV ALPR_CONF_THRESH=0.4
 ENV ALPR_DELETE_PROCESSED=true
 ENV ALPR_LOG_LEVEL=INFO
 
-# Enhanced detection (for distant plates)
-# When enabled, detects vehicles and re-runs plate detection on vehicle crops
-ENV ALPR_ENHANCED_DETECTION=true
+# Enhanced detection (for distant plates) - requires vehicle model
+# Disabled by default as yolov8n.onnx is not included
+ENV ALPR_ENHANCED_DETECTION=false
 ENV ALPR_MIN_PLATE_SIZE=30
 ENV ALPR_VEHICLE_CONF_THRESH=0.3
+
+# TensorRT engine cache (mount a persistent volume for faster startup)
+# First inference builds TensorRT engines which takes 1-3 minutes
+# Subsequent starts use cached engines for instant startup
+ENV ORT_TENSORRT_ENGINE_CACHE_ENABLE=1
+ENV ORT_TENSORRT_CACHE_PATH=/cache/tensorrt
+RUN mkdir -p /cache/tensorrt && chmod 777 /cache/tensorrt
 
 # Test mode - detection only, no API calls (for calibration)
 ENV ALPR_TEST_MODE=false

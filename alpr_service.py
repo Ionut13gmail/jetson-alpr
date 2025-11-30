@@ -78,8 +78,9 @@ class Config:
     # Polling interval (seconds) - fallback if inotify unavailable
     POLL_INTERVAL = float(os.environ.get('ALPR_POLL_INTERVAL', '0.5'))
 
-    # Enhanced detection (for distant plates)
-    ENHANCED_DETECTION = os.environ.get('ALPR_ENHANCED_DETECTION', 'true').lower() == 'true'
+    # Enhanced detection (for distant plates) - requires vehicle model (yolov8n.onnx)
+    # Disabled by default as vehicle model is not included
+    ENHANCED_DETECTION = os.environ.get('ALPR_ENHANCED_DETECTION', 'false').lower() == 'true'
     MIN_PLATE_SIZE = int(os.environ.get('ALPR_MIN_PLATE_SIZE', '30'))
     VEHICLE_CONF_THRESH = float(os.environ.get('ALPR_VEHICLE_CONF_THRESH', '0.3'))
 
