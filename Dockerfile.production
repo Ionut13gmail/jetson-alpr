@@ -62,6 +62,9 @@ ENV ALPR_ENHANCED_DETECTION=true
 ENV ALPR_MIN_PLATE_SIZE=30
 ENV ALPR_VEHICLE_CONF_THRESH=0.3
 
+# Test mode - detection only, no API calls (for calibration)
+ENV ALPR_TEST_MODE=false
+
 # Health check
 HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
     CMD python3 -c "import os; exit(0 if os.path.exists('/app/models') else 1)"

@@ -75,6 +75,9 @@ class Config:
     MIN_PLATE_SIZE = int(os.environ.get('ALPR_MIN_PLATE_SIZE', '30'))
     VEHICLE_CONF_THRESH = float(os.environ.get('ALPR_VEHICLE_CONF_THRESH', '0.3'))
 
+    # Test mode - only print detections, no API calls
+    TEST_MODE = os.environ.get('ALPR_TEST_MODE', 'false').lower() == 'true'
+
     # Annotation style
     BOX_COLOR = (0, 255, 0)  # Green BGR
     BOX_THICKNESS = 3
@@ -303,16 +306,18 @@ class ALPRService:
         self.logger.info("=" * 60)
         self.logger.info("ALPR Service Starting")
         self.logger.info("=" * 60)
-        self.logger.info("Mode: %s", Config.MODE.upper())
+        self.logger.info("Mode: %s%s", Config.MODE.upper(), " [TEST MODE]" if Config.TEST_MODE else "")
         self.logger.info("Watch: %s", Config.WATCH_DIR)
         self.logger.info("Output: %s", Config.OUTPUT_DIR)
+        if Config.TEST_MODE:
+            self.logger.info("*** TEST MODE - No API calls, detection only ***")
 
         # Create directories
         os.makedirs(Config.WATCH_DIR, exist_ok=True)
         os.makedirs(Config.OUTPUT_DIR, exist_ok=True)
 
-        # Initialize API client (if API mode)
-        if Config.MODE == 'api' and HAS_API:
+        # Initialize API client (if API mode and not test mode)
+        if Config.MODE == 'api' and HAS_API and not Config.TEST_MODE:
             self.logger.info("Initializing API client...")
             self.api_client = PlateAPIClient()
             if not self.api_client.initialize():
@@ -386,7 +391,10 @@ class ALPRService:
                 annotated = annotate_image(image, results)
 
                 # Process based on mode
-                if Config.MODE == 'api' and self.api_client:
+                if Config.TEST_MODE:
+                    # Test mode - just save annotated image, no API calls
+                    self._process_test_mode(plate_text, annotated, filename, confidence, bbox)
+                elif Config.MODE == 'api' and self.api_client:
                     self._process_api_mode(
                         plate_text, annotated, filename, confidence, bbox)
                 else:
@@ -449,6 +457,24 @@ class ALPRService:
         if Config.DELETE_AFTER_PROCESS:
             self._safe_remove(output_path)
 
+    def _process_test_mode(self, plate, image, filename, confidence, bbox, enhanced=False):
+        """Process detection in test mode - save annotated image, no API calls."""
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        base = os.path.splitext(filename)[0]
+        prefix = "enhanced_" if enhanced else ""
+        output_name = "{}{}_{}_{}_{:.0f}pct.jpg".format(
+            prefix, timestamp, plate, base, confidence * 100)
+        output_path = os.path.join(Config.OUTPUT_DIR, output_name)
+
+        # Save annotated image
+        cv2.imwrite(output_path, image, [cv2.IMWRITE_JPEG_QUALITY, 90])
+
+        # Log bbox info for calibration
+        x1, y1, x2, y2 = bbox
+        self.logger.info("  [TEST] Saved: %s", output_name)
+        self.logger.info("  [TEST] BBox: (%d,%d)-(%d,%d) Size: %dx%d",
+                        x1, y1, x2, y2, x2-x1, y2-y1)
+
     def _safe_remove(self, filepath):
         """Safely remove a file."""
         try:
@@ -504,7 +530,9 @@ class ALPRService:
                 annotated = annotate_image(image, results)
 
                 # Process based on mode
-                if Config.MODE == 'api' and self.api_client:
+                if Config.TEST_MODE:
+                    self._process_test_mode(plate_text, annotated, filename, confidence, bbox, enhanced=True)
+                elif Config.MODE == 'api' and self.api_client:
                     self._process_api_mode(
                         plate_text, annotated, filename, confidence, bbox)
                 else:
