@@ -65,6 +65,10 @@ ENV ALPR_VEHICLE_CONF_THRESH=0.3
 # Test mode - detection only, no API calls (for calibration)
 ENV ALPR_TEST_MODE=false
 
+# Live preview server port (test mode)
+ENV ALPR_PREVIEW_PORT=8080
+EXPOSE 8080
+
 # Health check
 HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
     CMD python3 -c "import os; exit(0 if os.path.exists('/app/models') else 1)"

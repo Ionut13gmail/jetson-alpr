@@ -24,7 +24,15 @@ import time
 import signal
 import logging
 import ftplib
+import threading
 from datetime import datetime
+
+# Python 2/3 compatibility for HTTP server
+try:
+    from http.server import HTTPServer, SimpleHTTPRequestHandler
+except ImportError:
+    from BaseHTTPServer import HTTPServer
+    from SimpleHTTPServer import SimpleHTTPRequestHandler
 
 import numpy as np
 import cv2
@@ -78,6 +86,9 @@ class Config:
     # Test mode - only print detections, no API calls
     TEST_MODE = os.environ.get('ALPR_TEST_MODE', 'false').lower() == 'true'
 
+    # Live preview HTTP server port (test mode only)
+    PREVIEW_PORT = int(os.environ.get('ALPR_PREVIEW_PORT', '8080'))
+
     # Annotation style
     BOX_COLOR = (0, 255, 0)  # Green BGR
     BOX_THICKNESS = 3
@@ -110,6 +121,144 @@ def setup_logging():
         handlers=handlers
     )
     return logging.getLogger('alpr_service')
+
+
+# =============================================================================
+# Live Preview HTTP Server
+# =============================================================================
+class LivePreviewHandler(SimpleHTTPRequestHandler):
+    """HTTP handler that serves latest.jpg with auto-refresh HTML page."""
+
+    def __init__(self, *args, output_dir=None, **kwargs):
+        self.output_dir = output_dir or Config.OUTPUT_DIR
+        # Python 2 compatibility - call parent init
+        SimpleHTTPRequestHandler.__init__(self, *args, **kwargs)
+
+    def log_message(self, format, *args):
+        """Suppress HTTP logging."""
+        pass
+
+    def do_GET(self):
+        """Handle GET requests."""
+        if self.path == '/' or self.path == '/index.html':
+            self._serve_html()
+        elif self.path == '/latest.jpg':
+            self._serve_latest_image()
+        elif self.path == '/status.json':
+            self._serve_status()
+        else:
+            self.send_error(404)
+
+    def _serve_html(self):
+        """Serve auto-refreshing HTML page."""
+        html = '''<!DOCTYPE html>
+<html>
+<head>
+    <title>ALPR Live Preview</title>
+    <style>
+        body { margin: 0; background: #1a1a1a; display: flex; flex-direction: column; align-items: center; font-family: Arial; }
+        h1 { color: #00ff00; margin: 10px; }
+        #status { color: #aaa; font-size: 14px; margin-bottom: 10px; }
+        img { max-width: 95vw; max-height: 80vh; border: 2px solid #333; }
+        .no-image { color: #666; font-size: 24px; padding: 100px; }
+    </style>
+</head>
+<body>
+    <h1>ALPR Live Preview</h1>
+    <div id="status">Waiting for detection...</div>
+    <img id="preview" src="/latest.jpg" onerror="this.style.display='none';document.getElementById('noimg').style.display='block';">
+    <div id="noimg" class="no-image" style="display:none;">No detection yet</div>
+    <script>
+        function refresh() {
+            var img = document.getElementById('preview');
+            img.src = '/latest.jpg?t=' + Date.now();
+            img.style.display = 'block';
+            document.getElementById('noimg').style.display = 'none';
+            fetch('/status.json?t=' + Date.now())
+                .then(r => r.json())
+                .then(d => {
+                    document.getElementById('status').innerHTML =
+                        'Last: <b>' + (d.plate || 'N/A') + '</b> | ' +
+                        'Confidence: ' + (d.confidence || 'N/A') + ' | ' +
+                        'Updated: ' + (d.timestamp || 'Never');
+                })
+                .catch(() => {});
+        }
+        setInterval(refresh, 1000);
+    </script>
+</body>
+</html>'''
+        self.send_response(200)
+        self.send_header('Content-Type', 'text/html')
+        self.send_header('Content-Length', len(html))
+        self.end_headers()
+        self.wfile.write(html.encode('utf-8'))
+
+    def _serve_latest_image(self):
+        """Serve the latest.jpg file."""
+        img_path = os.path.join(self.output_dir, 'latest.jpg')
+        if os.path.exists(img_path):
+            with open(img_path, 'rb') as f:
+                data = f.read()
+            self.send_response(200)
+            self.send_header('Content-Type', 'image/jpeg')
+            self.send_header('Content-Length', len(data))
+            self.send_header('Cache-Control', 'no-cache, no-store, must-revalidate')
+            self.end_headers()
+            self.wfile.write(data)
+        else:
+            self.send_error(404)
+
+    def _serve_status(self):
+        """Serve status JSON."""
+        import json
+        status_path = os.path.join(self.output_dir, 'status.json')
+        if os.path.exists(status_path):
+            with open(status_path, 'r') as f:
+                data = f.read()
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/json')
+            self.send_header('Content-Length', len(data))
+            self.send_header('Cache-Control', 'no-cache')
+            self.end_headers()
+            self.wfile.write(data.encode('utf-8'))
+        else:
+            data = '{"plate": null, "confidence": null, "timestamp": null}'
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/json')
+            self.send_header('Content-Length', len(data))
+            self.end_headers()
+            self.wfile.write(data.encode('utf-8'))
+
+
+class LivePreviewServer:
+    """Background HTTP server for live preview in test mode."""
+
+    def __init__(self, port, output_dir, logger):
+        self.port = port
+        self.output_dir = output_dir
+        self.logger = logger
+        self.server = None
+        self.thread = None
+
+    def start(self):
+        """Start the HTTP server in a background thread."""
+        def handler_factory(*args, **kwargs):
+            return LivePreviewHandler(*args, output_dir=self.output_dir, **kwargs)
+
+        try:
+            self.server = HTTPServer(('0.0.0.0', self.port), handler_factory)
+            self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+            self.thread.start()
+            self.logger.info("Live preview server started at http://0.0.0.0:%d", self.port)
+        except Exception as e:
+            self.logger.error("Failed to start preview server: %s", e)
+
+    def stop(self):
+        """Stop the HTTP server."""
+        if self.server:
+            self.server.shutdown()
+            self.logger.info("Live preview server stopped")
 
 
 # =============================================================================
@@ -292,6 +441,7 @@ class ALPRService:
         self.watcher = None
         self.running = False
         self._enhanced_executor = None
+        self.preview_server = None
         self.stats = {
             'processed': 0,
             'plates_found': 0,
@@ -311,6 +461,7 @@ class ALPRService:
         self.logger.info("Output: %s", Config.OUTPUT_DIR)
         if Config.TEST_MODE:
             self.logger.info("*** TEST MODE - No API calls, detection only ***")
+            self.logger.info("Live preview: http://0.0.0.0:%d", Config.PREVIEW_PORT)
 
         # Create directories
         os.makedirs(Config.WATCH_DIR, exist_ok=True)
@@ -354,6 +505,12 @@ class ALPRService:
         for _ in range(3):
             self.alpr.predict(dummy)
         self.logger.info("GPU ready")
+
+        # Start live preview server in test mode
+        if Config.TEST_MODE:
+            self.preview_server = LivePreviewServer(
+                Config.PREVIEW_PORT, Config.OUTPUT_DIR, self.logger)
+            self.preview_server.start()
 
     def process_image(self, filepath):
         """Process a single image."""
@@ -458,22 +615,37 @@ class ALPRService:
             self._safe_remove(output_path)
 
     def _process_test_mode(self, plate, image, filename, confidence, bbox, enhanced=False):
-        """Process detection in test mode - save annotated image, no API calls."""
-        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-        base = os.path.splitext(filename)[0]
-        prefix = "enhanced_" if enhanced else ""
-        output_name = "{}{}_{}_{}_{:.0f}pct.jpg".format(
-            prefix, timestamp, plate, base, confidence * 100)
-        output_path = os.path.join(Config.OUTPUT_DIR, output_name)
+        """Process detection in test mode - overwrite latest.jpg for live preview."""
+        import json
 
-        # Save annotated image
+        timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        x1, y1, x2, y2 = bbox
+        plate_w, plate_h = x2 - x1, y2 - y1
+
+        # Always overwrite latest.jpg (single file, no disk filling)
+        output_path = os.path.join(Config.OUTPUT_DIR, 'latest.jpg')
         cv2.imwrite(output_path, image, [cv2.IMWRITE_JPEG_QUALITY, 90])
 
-        # Log bbox info for calibration
-        x1, y1, x2, y2 = bbox
-        self.logger.info("  [TEST] Saved: %s", output_name)
-        self.logger.info("  [TEST] BBox: (%d,%d)-(%d,%d) Size: %dx%d",
-                        x1, y1, x2, y2, x2-x1, y2-y1)
+        # Write status JSON for live preview
+        status = {
+            'plate': plate,
+            'confidence': '{:.1f}%'.format(confidence * 100),
+            'timestamp': timestamp,
+            'bbox': {'x1': x1, 'y1': y1, 'x2': x2, 'y2': y2},
+            'size': {'w': plate_w, 'h': plate_h},
+            'enhanced': enhanced,
+            'filename': filename
+        }
+        status_path = os.path.join(Config.OUTPUT_DIR, 'status.json')
+        with open(status_path, 'w') as f:
+            json.dump(status, f)
+
+        # Log info
+        prefix = "[ENHANCED] " if enhanced else ""
+        self.logger.info("  %s[TEST] Plate: %s (%.1f%%) -> latest.jpg",
+                        prefix, plate, confidence * 100)
+        self.logger.info("  %s[TEST] BBox: (%d,%d)-(%d,%d) Size: %dx%d",
+                        prefix, x1, y1, x2, y2, plate_w, plate_h)
 
     def _safe_remove(self, filepath):
         """Safely remove a file."""
@@ -594,6 +766,10 @@ class ALPRService:
 
         if self.api_client:
             self.api_client.shutdown()
+
+        # Stop preview server
+        if self.preview_server:
+            self.preview_server.stop()
 
         self.logger.info("Service stopped")
 
