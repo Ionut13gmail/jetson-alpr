@@ -84,6 +84,13 @@ class Config:
     MIN_PLATE_SIZE = int(os.environ.get('ALPR_MIN_PLATE_SIZE', '30'))
     VEHICLE_CONF_THRESH = float(os.environ.get('ALPR_VEHICLE_CONF_THRESH', '0.3'))
 
+    # Crop margins for enhanced detection (car usually centered in frame)
+    # Values are percentages (0.0-0.5). E.g., 0.2 = crop 20% from each side
+    ENHANCED_CROP_LEFT = float(os.environ.get('ALPR_ENHANCED_CROP_LEFT', '0.0'))
+    ENHANCED_CROP_RIGHT = float(os.environ.get('ALPR_ENHANCED_CROP_RIGHT', '0.0'))
+    ENHANCED_CROP_TOP = float(os.environ.get('ALPR_ENHANCED_CROP_TOP', '0.0'))
+    ENHANCED_CROP_BOTTOM = float(os.environ.get('ALPR_ENHANCED_CROP_BOTTOM', '0.0'))
+
     # Test mode - only print detections, no API calls
     TEST_MODE = os.environ.get('ALPR_TEST_MODE', 'false').lower() == 'true'
 
@@ -151,41 +158,31 @@ class LivePreviewHandler(SimpleHTTPRequestHandler):
             self.send_error(404)
 
     def _serve_html(self):
-        """Serve auto-refreshing HTML page."""
+        """Serve auto-refreshing HTML page - simple debug view."""
         html = '''<!DOCTYPE html>
 <html>
 <head>
-    <title>ALPR Live Preview</title>
+    <title>ALPR Debug</title>
     <style>
-        body { margin: 0; background: #1a1a1a; display: flex; flex-direction: column; align-items: center; font-family: Arial; }
-        h1 { color: #00ff00; margin: 10px; }
-        #status { color: #aaa; font-size: 14px; margin-bottom: 10px; }
-        img { max-width: 95vw; max-height: 80vh; border: 2px solid #333; }
-        .no-image { color: #666; font-size: 24px; padding: 100px; }
+        body { margin: 0; padding: 10px; background: #1a1a1a; font-family: monospace; color: #0f0; }
+        #status { font-size: 12px; margin-bottom: 5px; }
+        img { max-width: 100%; max-height: 90vh; border: 1px solid #333; }
     </style>
 </head>
 <body>
-    <h1>ALPR Live Preview</h1>
-    <div id="status">Waiting for detection...</div>
-    <img id="preview" src="/latest.jpg" onerror="this.style.display='none';document.getElementById('noimg').style.display='block';">
-    <div id="noimg" class="no-image" style="display:none;">No detection yet</div>
+    <div id="status">Waiting...</div>
+    <img id="preview" src="/latest.jpg">
     <script>
-        function refresh() {
-            var img = document.getElementById('preview');
-            img.src = '/latest.jpg?t=' + Date.now();
-            img.style.display = 'block';
-            document.getElementById('noimg').style.display = 'none';
+        setInterval(function() {
+            document.getElementById('preview').src = '/latest.jpg?t=' + Date.now();
             fetch('/status.json?t=' + Date.now())
-                .then(r => r.json())
-                .then(d => {
-                    document.getElementById('status').innerHTML =
-                        'Last: <b>' + (d.plate || 'N/A') + '</b> | ' +
-                        'Confidence: ' + (d.confidence || 'N/A') + ' | ' +
-                        'Updated: ' + (d.timestamp || 'Never');
+                .then(function(r) { return r.json(); })
+                .then(function(d) {
+                    document.getElementById('status').innerText =
+                        d.plate + ' | ' + d.confidence + ' | ' + (d.enhanced ? 'ENHANCED' : 'direct') + ' | ' + d.timestamp;
                 })
-                .catch(() => {});
-        }
-        setInterval(refresh, 1000);
+                .catch(function() {});
+        }, 5000);
     </script>
 </body>
 </html>'''
@@ -561,14 +558,17 @@ class ALPRService:
 
                 # Check if plate is too small - queue enhanced detection in background
                 if self._should_run_enhanced(results) and self.enhanced_alpr:
-                    self.logger.info("  Plate too small, queueing enhanced detection...")
+                    x1, y1, x2, y2 = best['bbox']
+                    plate_w, plate_h = x2 - x1, y2 - y1
+                    self.logger.info("  [ENHANCED] Plate too small (%dx%d < %d), sending to vehicle detection",
+                                   plate_w, plate_h, Config.MIN_PLATE_SIZE)
                     self._queue_enhanced_detection(image.copy(), filename)
             else:
                 self.logger.info("  No plate detected [%dms]", inference_ms)
 
                 # No results - queue enhanced detection in background
                 if self.enhanced_alpr:
-                    self.logger.info("  Queueing enhanced detection...")
+                    self.logger.info("  [ENHANCED] No direct detection, sending to vehicle detection")
                     self._queue_enhanced_detection(image.copy(), filename)
 
             # Cleanup input file
@@ -672,6 +672,18 @@ class ALPRService:
     def _queue_enhanced_detection(self, image, filename):
         """Queue enhanced detection to run in background thread."""
         if self._enhanced_executor:
+            # Apply crop margins if configured (car usually centered)
+            h, w = image.shape[:2]
+            crop_left = int(w * Config.ENHANCED_CROP_LEFT)
+            crop_right = int(w * Config.ENHANCED_CROP_RIGHT)
+            crop_top = int(h * Config.ENHANCED_CROP_TOP)
+            crop_bottom = int(h * Config.ENHANCED_CROP_BOTTOM)
+
+            if crop_left > 0 or crop_right > 0 or crop_top > 0 or crop_bottom > 0:
+                self.logger.debug("  [ENHANCED] Applying crop margins: L=%d R=%d T=%d B=%d",
+                                crop_left, crop_right, crop_top, crop_bottom)
+                image = image[crop_top:h-crop_bottom, crop_left:w-crop_right]
+
             self._enhanced_executor.submit(
                 self._process_enhanced_detection, image, filename
             )

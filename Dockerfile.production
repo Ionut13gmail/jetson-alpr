@@ -62,6 +62,13 @@ ENV ALPR_ENHANCED_DETECTION=false
 ENV ALPR_MIN_PLATE_SIZE=30
 ENV ALPR_VEHICLE_CONF_THRESH=0.3
 
+# Crop margins for enhanced detection (0.0-0.5)
+# Use when car is centered and you want to exclude edges
+ENV ALPR_ENHANCED_CROP_LEFT=0.0
+ENV ALPR_ENHANCED_CROP_RIGHT=0.0
+ENV ALPR_ENHANCED_CROP_TOP=0.0
+ENV ALPR_ENHANCED_CROP_BOTTOM=0.0
+
 # TensorRT engine cache (mount a persistent volume for faster startup)
 # First inference builds TensorRT engines which takes 1-3 minutes
 # Subsequent starts use cached engines for instant startup

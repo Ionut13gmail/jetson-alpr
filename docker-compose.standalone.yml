@@ -18,6 +18,8 @@ services:
     container_name: alpr-service
     restart: unless-stopped
     runtime: nvidia
+    env_file:
+      - .env
     environment:
       # Service mode: 'api' (PanoramaCity) or 'ftp' (legacy)
       - ALPR_MODE=${ALPR_MODE:-api}
@@ -48,8 +50,21 @@ services:
       - ALPR_DELETE_PROCESSED=${ALPR_DELETE_PROCESSED:-true}
       - ALPR_LOG_LEVEL=${ALPR_LOG_LEVEL:-INFO}
 
+      # Test mode (detection only, no API calls)
+      - ALPR_TEST_MODE=${ALPR_TEST_MODE:-false}
+      - ALPR_PREVIEW_PORT=${ALPR_PREVIEW_PORT:-8080}
+
       # Enhanced detection (requires yolov8n.onnx model)
       - ALPR_ENHANCED_DETECTION=${ALPR_ENHANCED_DETECTION:-false}
+      - ALPR_MIN_PLATE_SIZE=${ALPR_MIN_PLATE_SIZE:-30}
+
+      # Crop margins for enhanced detection (0.0-0.5)
+      - ALPR_ENHANCED_CROP_LEFT=${ALPR_ENHANCED_CROP_LEFT:-0.0}
+      - ALPR_ENHANCED_CROP_RIGHT=${ALPR_ENHANCED_CROP_RIGHT:-0.0}
+      - ALPR_ENHANCED_CROP_TOP=${ALPR_ENHANCED_CROP_TOP:-0.0}
+      - ALPR_ENHANCED_CROP_BOTTOM=${ALPR_ENHANCED_CROP_BOTTOM:-0.0}
+    ports:
+      - "${ALPR_PREVIEW_PORT:-8080}:8080"
     volumes:
       # Use /dev/shm for RAM-based storage (protects SD card)
       - /dev/shm/alpr_inbox:/watch/inbox
