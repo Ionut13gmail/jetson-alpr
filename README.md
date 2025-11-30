@@ -21,14 +21,45 @@ GPU-accelerated Automatic License Plate Recognition (ALPR) service for NVIDIA Je
 
 ## Quick Start
 
-### 1. Clone the Repository
+### 1. Clone and Setup
 
 ```bash
 git clone https://github.com/ionut13gmail/jetson-alpr.git
 cd jetson-alpr
+
+# Run setup wizard (creates .env, optionally installs vsftpd)
+./run_alpr.sh setup
 ```
 
-### 2. Build and Run
+### 2. Configure
+
+```bash
+# Edit configuration
+nano .env
+```
+
+### 3. Start Service
+
+```bash
+./run_alpr.sh start
+```
+
+## Management Script
+
+The `run_alpr.sh` script provides easy management:
+
+| Command | Description |
+|---------|-------------|
+| `./run_alpr.sh setup` | First-time setup wizard |
+| `./run_alpr.sh start` | Start the service |
+| `./run_alpr.sh stop` | Stop the service |
+| `./run_alpr.sh restart` | Restart the service |
+| `./run_alpr.sh update` | Pull from GitHub & rebuild |
+| `./run_alpr.sh logs` | View service logs |
+| `./run_alpr.sh status` | Show service status |
+| `./run_alpr.sh test` | Test with sample image |
+
+## Manual Build and Run
 
 ```bash
 # Build the Docker image
