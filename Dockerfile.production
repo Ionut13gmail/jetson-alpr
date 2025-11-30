@@ -1,31 +1,57 @@
 # Production Dockerfile for ALPR Service on Jetson Nano
-# Watches for camera uploads, processes with GPU, annotates, and uploads to FTP
+# PanoramaCity Integration - GPU-accelerated license plate recognition
+#
+# Features:
+# - Watches for camera uploads via FTP
+# - GPU-accelerated ALPR with TensorRT
+# - Plate authorization against remote database
+# - Gate barrier control
+# - Async cloud upload
 
 FROM dustynv/l4t-ml:r32.7.1
 
 WORKDIR /app
 
-# Install inotify for efficient file watching
+# Install dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
     python3-pip \
     && rm -rf /var/lib/apt/lists/* \
-    && pip3 install --no-cache-dir inotify
+    && pip3 install --no-cache-dir inotify requests
 
 # Copy application files
 COPY jetson_alpr.py /app/
 COPY alpr_service.py /app/
+COPY plate_api.py /app/
 COPY models/ /app/models/
 
 # Create watch directories (will be mounted from host)
 RUN mkdir -p /watch/inbox /watch/outbox
 
-# Environment variables (can be overridden)
+# Environment variables - Service Mode
+ENV ALPR_MODE=api
+
+# Watch directories
 ENV ALPR_WATCH_DIR=/watch/inbox
 ENV ALPR_OUTPUT_DIR=/watch/outbox
+
+# API settings (PanoramaCity)
+ENV ALPR_API_URL=https://acces.panoramacity.ro/utilitypagesAPI/_x_ApI_nano.php
+ENV ALPR_API_KEY=A954C6A5-5207-4DF8-91BC-E9E3B73664BF
+ENV ALPR_CACHE_TTL=3600
+ENV ALPR_JPEG_QUALITY=70
+
+# Gate control
+ENV ALPR_GATE_ENABLED=false
+ENV ALPR_GATE1_IP=192.168.1.230
+ENV ALPR_GATE2_IP=192.168.1.234
+
+# FTP settings (legacy mode)
 ENV ALPR_FTP_HOST=192.168.100.238
 ENV ALPR_FTP_USER=photo
 ENV ALPR_FTP_PASS=photo
 ENV ALPR_FTP_DIR=/
+
+# Detection settings
 ENV ALPR_CONF_THRESH=0.4
 ENV ALPR_DELETE_PROCESSED=true
 ENV ALPR_LOG_LEVEL=INFO

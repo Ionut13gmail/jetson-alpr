@@ -1,8 +1,11 @@
-# Standalone ALPR Service (without built-in FTP server)
-# Use this if you already have an FTP server or want to use host filesystem
+# Standalone ALPR Service - PanoramaCity Integration
+# Use this for production deployment with API mode (default) or FTP mode (legacy)
 #
 # Usage:
-#   JETSON_IP=10.8.1.2 docker-compose -f docker-compose.standalone.yml up -d
+#   docker-compose -f docker-compose.standalone.yml up -d
+#
+# With custom settings:
+#   ALPR_MODE=api ALPR_GATE_ENABLED=true docker-compose -f docker-compose.standalone.yml up -d
 
 version: '2.3'
 
@@ -16,18 +19,37 @@ services:
     restart: unless-stopped
     runtime: nvidia
     environment:
+      # Service mode: 'api' (PanoramaCity) or 'ftp' (legacy)
+      - ALPR_MODE=${ALPR_MODE:-api}
+
+      # Watch directories (inside container)
       - ALPR_WATCH_DIR=/watch/inbox
       - ALPR_OUTPUT_DIR=/watch/outbox
-      - ALPR_FTP_HOST=${FTP_HOST:-192.168.100.238}
-      - ALPR_FTP_USER=${FTP_USER:-photo}
-      - ALPR_FTP_PASS=${FTP_PASS:-photo}
-      - ALPR_FTP_DIR=${FTP_DIR:-/}
-      - ALPR_CONF_THRESH=${CONF_THRESH:-0.4}
-      - ALPR_DELETE_PROCESSED=true
-      - ALPR_LOG_LEVEL=${LOG_LEVEL:-INFO}
+
+      # PanoramaCity API settings
+      - ALPR_API_URL=${ALPR_API_URL:-https://acces.panoramacity.ro/utilitypagesAPI/_x_ApI_nano.php}
+      - ALPR_API_KEY=${ALPR_API_KEY:-A954C6A5-5207-4DF8-91BC-E9E3B73664BF}
+      - ALPR_CACHE_TTL=${ALPR_CACHE_TTL:-3600}
+      - ALPR_JPEG_QUALITY=${ALPR_JPEG_QUALITY:-70}
+
+      # Gate control
+      - ALPR_GATE_ENABLED=${ALPR_GATE_ENABLED:-false}
+      - ALPR_GATE1_IP=${ALPR_GATE1_IP:-192.168.1.230}
+      - ALPR_GATE2_IP=${ALPR_GATE2_IP:-192.168.1.234}
+
+      # FTP settings (legacy mode)
+      - ALPR_FTP_HOST=${ALPR_FTP_HOST:-192.168.100.238}
+      - ALPR_FTP_USER=${ALPR_FTP_USER:-photo}
+      - ALPR_FTP_PASS=${ALPR_FTP_PASS:-photo}
+      - ALPR_FTP_DIR=${ALPR_FTP_DIR:-/}
+
+      # Detection settings
+      - ALPR_CONF_THRESH=${ALPR_CONF_THRESH:-0.4}
+      - ALPR_DELETE_PROCESSED=${ALPR_DELETE_PROCESSED:-true}
+      - ALPR_LOG_LEVEL=${ALPR_LOG_LEVEL:-INFO}
     volumes:
       # Use /dev/shm for RAM-based storage (protects SD card)
       - /dev/shm/alpr_inbox:/watch/inbox
       - /dev/shm/alpr_outbox:/watch/outbox
-      # Models
+      # Models (read-only)
       - ./models:/app/models:ro
