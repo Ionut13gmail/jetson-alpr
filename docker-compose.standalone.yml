@@ -49,7 +49,6 @@ services:
       # Detection settings
       - ALPR_CONF_THRESH=${ALPR_CONF_THRESH:-0.4}
       - ALPR_DELETE_PROCESSED=${ALPR_DELETE_PROCESSED:-true}
-      - ALPR_LOG_LEVEL=${ALPR_LOG_LEVEL:-INFO}
 
       # Test mode (detection only, no API calls)
       - ALPR_TEST_MODE=${ALPR_TEST_MODE:-false}
