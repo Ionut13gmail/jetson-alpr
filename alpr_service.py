@@ -118,17 +118,31 @@ def setup_logging():
     """Configure logging."""
     level = getattr(logging, Config.LOG_LEVEL.upper(), logging.INFO)
 
-    handlers = [logging.StreamHandler(sys.stdout)]
-    if Config.LOG_FILE:
-        handlers.append(logging.FileHandler(Config.LOG_FILE))
+    # Create logger
+    logger = logging.getLogger('alpr_service')
+    logger.setLevel(level)
 
-    logging.basicConfig(
-        level=level,
-        format='%(asctime)s [%(levelname)s] %(message)s',
-        datefmt='%Y-%m-%d %H:%M:%S',
-        handlers=handlers
+    # Clear any existing handlers
+    logger.handlers = []
+
+    # Create console handler
+    console_handler = logging.StreamHandler(sys.stdout)
+    console_handler.setLevel(level)
+    formatter = logging.Formatter(
+        '%(asctime)s [%(levelname)s] %(message)s',
+        datefmt='%Y-%m-%d %H:%M:%S'
     )
-    return logging.getLogger('alpr_service')
+    console_handler.setFormatter(formatter)
+    logger.addHandler(console_handler)
+
+    # Add file handler if configured
+    if Config.LOG_FILE:
+        file_handler = logging.FileHandler(Config.LOG_FILE)
+        file_handler.setLevel(level)
+        file_handler.setFormatter(formatter)
+        logger.addHandler(file_handler)
+
+    return logger
 
 
 # =============================================================================
